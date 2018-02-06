@@ -1,13 +1,13 @@
-%define pecl_name geoip
-%if "%{php_version}" < "5.6"
-%global ini_name  %{pecl_name}.ini
-%else
+# IUS spec file for php72u-pecl-geoip	, forked from Fedora:
+%global pecl_name geoip
 %global ini_name  40-%{pecl_name}.ini
-%endif
+%global php       php71u
 
-Name:		php-pecl-geoip
+%bcond_without zts
+
+Name:		%{php}-pecl-%{pecl_name}
 Version:	1.1.1
-Release:	5%{?dist}
+Release:	1.ius%{?dist}
 Summary:	Extension to map IP addresses to geographic places
 Group:		Development/Languages
 License:	PHP
@@ -15,16 +15,40 @@ URL:		http://pecl.php.net/package/%{pecl_name}
 Source0:	http://pecl.php.net/get/%{pecl_name}-%{version}.tgz
 
 BuildRequires:	GeoIP-devel
-BuildRequires:	php-devel
-BuildRequires:	php-pear
+BuildRequires:  %{php}-devel
+
+BuildRequires:  pear1u
+# explicitly require pear dependencies to avoid conflicts
+BuildRequires:  %{php}-cli
+BuildRequires:  %{php}-common
+BuildRequires:  %{php}-process
+BuildRequires:  %{php}-xml
 
 Requires:       php(zend-abi) = %{php_zend_api}
 Requires:       php(api) = %{php_core_api}
 
-Provides:       php-%{pecl_name}               = %{version}
-Provides:       php-%{pecl_name}%{?_isa}       = %{version}
-Provides:       php-pecl(%{pecl_name})         = %{version}
+# provide the stock name
+Provides:       php-pecl-%{pecl_name} = %{version}
+Provides:       php-pecl-%{pecl_name}%{?_isa} = %{version}
+
+# provide the stock and IUS names without pecl
+Provides:       php-%{pecl_name} = %{version}
+Provides:       php-%{pecl_name}%{?_isa} = %{version}
+Provides:       %{php}-%{pecl_name} = %{version}
+Provides:       %{php}-%{pecl_name}%{?_isa} = %{version}
+
+# provide the stock and IUS names in pecl() format
+Provides:       php-pecl(%{pecl_name}) = %{version}
 Provides:       php-pecl(%{pecl_name})%{?_isa} = %{version}
+Provides:       %{php}-pecl(%{pecl_name}) = %{version}
+Provides:       %{php}-pecl(%{pecl_name})%{?_isa} = %{version}
+
+# conflict with the stock name
+Conflicts:      php-pecl-%{pecl_name} < %{version}
+
+%{?filter_provides_in: %filter_provides_in %{php_extdir}/.*\.so$}
+%{?filter_provides_in: %filter_provides_in %{php_ztsextdir}/.*\.so$}
+%{?filter_setup}
 
 
 %description
@@ -47,45 +71,67 @@ cat > %{ini_name} << 'EOF'
 extension=%{pecl_name}.so
 EOF
 
-cd %{pecl_name}-%{version}
+mv %{pecl_name}-%{version} NTS
+
 # Upstream often forget this
-extver=$(sed -n '/#define PHP_GEOIP_VERSION/{s/.* "//;s/".*$//;p}' php_geoip.h)
+extver=$(sed -n '/#define PHP_GEOIP_VERSION/{s/.* "//;s/".*$//;p}' NTS/php_geoip.h)
 if test "x${extver}" != "x%{version}"; then
    : Error: Upstream version is ${extver}, expecting %{version}.
    exit 1
 fi
 
+%if %{with zts}
+cp -pr NTS ZTS
+%endif
 
 %build
-cd %{pecl_name}-%{version}
+pushd NTS
 phpize
 %configure --with-php-config=%{_bindir}/php-config
-make %{?_smp_mflags}
+%make_build
+popd
+
+%if %{with zts}
+pushd ZTS
+zts-phpize
+%configure --with-php-config=%{_bindir}/zts-php-config
+%make_build
+popd
+%endif
 
 
 %install
-make -C %{pecl_name}-%{version} install INSTALL_ROOT=%{buildroot} INSTALL="install -p"
+make -C NTS install INSTALL_ROOT=%{buildroot}
+install -D -p -m 644 %{ini_name} %{buildroot}%{php_inidir}/%{ini_name}
+
+%if %{with zts}
+make -C ZTS install INSTALL_ROOT=%{buildroot}
+install -D -p -m 644 %{ini_name} %{buildroot}%{php_ztsinidir}/%{ini_name}
+%endif
 
 # Install XML package description
-install -Dpm 644 package.xml %{buildroot}%{pecl_xmldir}/%{name}.xml
-
-# install config file
-install -Dpm644 %{ini_name} %{buildroot}%{php_inidir}/%{ini_name}
+install -D -p -m 644 package.xml %{buildroot}%{pecl_xmldir}/%{pecl_name}.xml
 
 # Documentation
-cd %{pecl_name}-%{version}
-for i in $(grep 'role="doc"' ../package.xml | sed -e 's/^.*name="//;s/".*$//')
-do install -Dpm 644 $i %{buildroot}%{pecl_docdir}/%{pecl_name}/$i
+for i in $(grep 'role="doc"' package.xml | sed -e 's/^.*name="//;s/".*$//')
+do install -D -p -m 644 NTS/$i %{buildroot}%{pecl_docdir}/%{pecl_name}/$i
 done
 
 
 %check
-cd %{pecl_name}-%{version}
 : Minimal load test for NTS extension
 %{__php} -n \
     -d extension=%{buildroot}%{php_extdir}/%{pecl_name}.so \
     -m | grep %{pecl_name}
 
+%if %{with zts}
+: Minimal load test for ZTS extension
+%{__ztsphp} -n \
+    -d extension=%{buildroot}%{php_ztsextdir}/%{pecl_name}.so \
+    -m | grep %{pecl_name}
+%endif
+
+pushd NTS
 # Missing IPv6 data
 rm tests/019.phpt
 
@@ -97,17 +143,43 @@ NO_INTERACTION=1 \
     -d extension_dir=modules \
     -d extension=%{pecl_name}.so \
     --show-diff
+popd
+
+
+%triggerin -- pear1u
+if [ -x %{__pecl} ]; then
+    %{pecl_install} %{pecl_xmldir}/%{pecl_name}.xml >/dev/null || :
+fi
+
+
+%posttrans
+if [ -x %{__pecl} ]; then
+    %{pecl_install} %{pecl_xmldir}/%{pecl_name}.xml >/dev/null || :
+fi
+
+
+%postun
+if [ $1 -eq 0 -a -x %{__pecl} ]; then
+    %{pecl_uninstall} %{pecl_name} >/dev/null || :
+fi
 
 
 %files
-%license %{pecl_name}-%{version}/LICENSE
+%license NTS/LICENSE
 %doc %{pecl_docdir}/%{pecl_name}
-%config(noreplace) %{_sysconfdir}/php.d/%{ini_name}
+%config(noreplace) %{php_inidir}/%{ini_name}
 %{php_extdir}/%{pecl_name}.so
-%{pecl_xmldir}/%{name}.xml
+%{pecl_xmldir}/%{pecl_name}.xml
 
+%if %{with zts}
+%config(noreplace) %{php_ztsinidir}/%{ini_name}
+%{php_ztsextdir}/%{pecl_name}.so
+%endif
 
 %changelog
+* Tue Feb 06 2018 Ben Harper <ben.harper@rackspace.com> - 1.1.1-1.ius
+- port from Fedora
+
 * Tue Oct 03 2017 Remi Collet <remi@fedoraproject.org> - 1.1.1-5
 - rebuild for https://fedoraproject.org/wiki/Changes/php72
 
