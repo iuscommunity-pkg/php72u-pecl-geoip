@@ -1,7 +1,7 @@
 # IUS spec file for php72u-pecl-geoip	, forked from Fedora:
 %global pecl_name geoip
 %global ini_name  40-%{pecl_name}.ini
-%global php       php71u
+%global php       php72u
 
 %bcond_without zts
 
